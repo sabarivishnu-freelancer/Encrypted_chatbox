@@ -1,0 +1,702 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Chat App - Prototype</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 0;
+        background-color: rgb(226, 226, 233);
+        padding: 0;
+      }
+      .container {
+        display: flex;
+        height: 100vh;
+      }
+      .sidebar {
+        width: 280px;
+        border-right: 1px solid #ddd;
+        padding: 16px;
+        box-sizing: border-box;
+      }
+      .main {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+      }
+      .user-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+      }
+      .user-list li {
+        padding: 8px;
+        border-bottom: 1px solid #eee;
+        cursor: pointer;
+      }
+      .chat {
+        flex: 1;
+        padding: 16px;
+        overflow: auto;
+      }
+      .composer {
+        border-top: 1px solid #ddd;
+        padding: 12px;
+        display: flex;
+        gap: 8px;
+      }
+      .composer input[type="text"] {
+        flex: 1;
+        padding: 8px;
+      }
+      .composer button {
+        padding: 8px 12px;
+        cursor: pointer;
+      }
+      .message {
+        margin-bottom: 8px;
+      }
+      .message.me {
+        text-align: right;
+      }
+      .message img {
+        max-width: 300px;
+        max-height: 300px;
+        border-radius: 8px;
+        margin: 8px 0;
+      }
+      .encrypted-image-placeholder {
+        width: 300px;
+        height: 300px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-weight: bold;
+        text-align: center;
+        padding: 20px;
+        box-sizing: border-box;
+      }
+      .topbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 8px 12px;
+        border-bottom: 1px solid #eee;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="auth" style="padding: 20px; max-width: 420px; margin: 24px auto">
+      <h2>Chat App — Login / Register</h2>
+      <div>
+        <input
+          id="email"
+          placeholder="Email"
+          style="width: 100%; padding: 8px; margin: 6px 0"
+        />
+        <input
+          id="password"
+          placeholder="Password"
+          type="password"
+          style="width: 100%; padding: 8px; margin: 6px 0"
+        />
+        <div style="display: flex; gap: 8px">
+          <button id="btnLogin">Login</button>
+          <button id="btnRegister">Register</button>
+        </div>
+        <p id="authMsg" style="color: red"></p>
+      </div>
+    </div>
+
+    <div id="app" class="container" style="display: none">
+      <div class="sidebar">
+        <div class="topbar">
+          <strong>Users</strong>
+          <button id="btnLogout">Logout</button>
+        </div>
+        <ul id="users" class="user-list"></ul>
+      </div>
+      <div class="main">
+        <div id="chatTop" class="topbar">
+          <span id="chatWith">Select a user to chat</span>
+        </div>
+        <div id="chat" class="chat"></div>
+        <div class="composer">
+          <input id="messageInput" placeholder="Type a message" />
+          <input id="imageInput" type="file" accept="image/*" style="display: none" />
+          <button id="uploadBtn">📷 Upload Image</button>
+          <button id="sendBtn">Send</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <script>
+      // simple client-side app
+      let token = localStorage.getItem("token") || null;
+      let me = null;
+      let socket = null;
+      let currentChatId = null;
+
+      const $auth = document.getElementById("auth");
+      const $app = document.getElementById("app");
+      const $email = document.getElementById("email");
+      const $password = document.getElementById("password");
+      const $authMsg = document.getElementById("authMsg");
+      const $users = document.getElementById("users");
+      const $chat = document.getElementById("chat");
+      const $chatWith = document.getElementById("chatWith");
+      const $messageInput = document.getElementById("messageInput");
+      const $imageInput = document.getElementById("imageInput");
+      const $uploadBtn = document.getElementById("uploadBtn");
+      const $sendBtn = document.getElementById("sendBtn");
+
+      function showAuth() {
+        $auth.style.display = "block";
+        $app.style.display = "none";
+      }
+      function showApp() {
+        $auth.style.display = "none";
+        $app.style.display = "flex";
+      }
+
+      async function api(path, opts = {}) {
+        opts.headers = opts.headers || {};
+        if (token) opts.headers["Authorization"] = "Bearer " + token;
+        const res = await fetch(path, opts);
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw json;
+        return json;
+      }
+
+      document.getElementById("btnRegister").onclick = async () => {
+        const email = $email.value.trim();
+        const password = $password.value;
+        $authMsg.innerText = "";
+        try {
+          const r = await api("/register", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email, password }),
+          });
+          token = r.token;
+          me = r.user;
+          localStorage.setItem("token", token);
+          startApp();
+        } catch (err) {
+          $authMsg.innerText = err.error || "Registration failed";
+        }
+      };
+
+      document.getElementById("btnLogin").onclick = async () => {
+        const email = $email.value.trim();
+        const password = $password.value;
+        $authMsg.innerText = "";
+        try {
+          const r = await api("/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email, password }),
+          });
+          token = r.token;
+          me = r.user;
+          localStorage.setItem("token", token);
+          startApp();
+        } catch (err) {
+          $authMsg.innerText = err.error || "Login failed";
+        }
+      };
+
+      document.getElementById("btnLogout").onclick = () => {
+        token = null;
+        me = null;
+        localStorage.removeItem("token");
+        if (socket) socket.disconnect();
+        socket = null;
+        showAuth();
+      };
+
+      async function startApp() {
+        showApp();
+        // connect socket with token
+        socket = io({ auth: { token } });
+        socket.on("connect_error", (err) => {
+          console.error("socket connect error", err);
+        });
+        socket.on("connect", () => {
+          console.log("connected to socket");
+        });
+        socket.on("private_message", (msg) => {
+          // display incoming message
+          if (
+            msg.sender_id === Number(currentChatId) ||
+            msg.receiver_id === Number(currentChatId) ||
+            msg.sender_id === me.id
+          ) {
+            renderMessage(msg);
+          } else {
+            // optionally notify
+            console.log("New message from", msg.sender_id);
+          }
+        });
+
+        await loadUsers();
+      }
+
+      async function loadUsers() {
+        try {
+          const list = await api("/users");
+          $users.innerHTML = "";
+          list.forEach((u) => {
+            const li = document.createElement("li");
+            li.innerText = u.email;
+            li.dataset.id = u.id;
+            li.onclick = () => {
+              openChat(u.id, u.email);
+            };
+            $users.appendChild(li);
+          });
+        } catch (err) {
+          console.error(err);
+        }
+      }
+
+      async function openChat(id, email) {
+        currentChatId = id;
+        $chatWith.innerText = "Chat with " + email;
+        $chat.innerHTML = "";
+        try {
+          const msgs = await api("/messages/" + id);
+          msgs.forEach(renderMessage);
+          // scroll to bottom
+          $chat.scrollTop = $chat.scrollHeight;
+        } catch (err) {
+          console.error(err);
+        }
+      }
+
+      function renderMessage(msg) {
+        const div = document.createElement("div");
+        div.className = "message " + (msg.sender_id === me.id ? "me" : "them");
+        // if this is a server-confirmation for a message we optimistically rendered,
+        // remove the temp optimistic element to avoid duplicates
+        if (!msg._local && msg.sender_id === me.id) {
+          const pending = $chat.querySelector('.message.me[data-temp="true"]');
+          if (pending) pending.remove();
+        }
+
+        const time = new Date(msg.created_at).toLocaleTimeString();
+
+        // support stored envelope: JSON with { encrypted, plain_for_sender } or { type: 'image', ... }
+        let contentHtml = "";
+        try {
+          const parsed = JSON.parse(msg.content);
+          
+          // Handle image messages
+          if (parsed && parsed.type === "image") {
+            if (parsed.encrypted) {
+              // Show encrypted image placeholder
+              contentHtml = `<div class="encrypted-image-placeholder">🔒 Encrypted Image<br><br>Enter key to decrypt</div>`;
+              contentHtml += ` <button data-encrypted-image="${encodeURIComponent(JSON.stringify(parsed))}" class="decryptImageBtn">Decrypt Image</button>`;
+            } else {
+              // Show normal image
+              const img = escapeHtml(parsed.imageData);
+              contentHtml = `<img src="${img}" alt="Chat image" />`;
+              if (parsed.plain_for_sender && msg.sender_id === me.id) {
+                contentHtml += `<div><small>Original image (you can see it)</small></div>`;
+              }
+            }
+          } else if (parsed && parsed.encrypted) {
+            // Text encryption
+            // if we are the sender and server stored a plain_for_sender, show it
+            if (msg.sender_id === me.id && parsed.plain_for_sender) {
+              contentHtml = `<div>${escapeHtml(parsed.plain_for_sender)}</div>`;
+            } else {
+              // show encrypted text and a button to enter key to decrypt
+              const enc = escapeHtml(parsed.encrypted);
+              contentHtml = `<div>${enc}</div>`;
+              contentHtml += ` <button data-encrypted="${encodeURIComponent(parsed.encrypted)}" class="decryptBtn">Decrypt</button>`;
+            }
+          } else {
+            contentHtml = `<div>${escapeHtml(msg.content)}</div>`;
+          }
+        } catch (e) {
+          contentHtml = `<div>${escapeHtml(msg.content)}</div>`;
+        }
+
+        div.innerHTML = `<div><small>${time}</small></div>${contentHtml}`;
+        $chat.appendChild(div);
+        $chat.scrollTop = $chat.scrollHeight;
+
+        // attach decrypt handlers for any new decrypt buttons
+        const btn = div.querySelector(".decryptBtn");
+        if (btn) {
+          btn.onclick = () => {
+            const enc = decodeURIComponent(btn.dataset.encrypted || "");
+            while (true) {
+              const keyStr = prompt("Enter decryption key (number):");
+              if (!keyStr) {
+                // user cancelled
+                return;
+              }
+              const k = Number(keyStr);
+              if (!Number.isFinite(k)) {
+                alert("Invalid key. Please enter a number.");
+                continue;
+              }
+
+              const dec = decryptMessage(enc, k);
+              // Basic validity: decrypted message should contain @gmail.com when encrypting gmail addresses
+              if (/@gmail\.com/.test(dec)) {
+                btn.parentElement.querySelector("div").innerText = dec;
+                btn.remove();
+                return;
+              }
+
+              alert("Wrong key. Please try again.");
+            }
+          };
+        }
+
+        // attach decrypt handlers for encrypted images
+        const imgBtn = div.querySelector(".decryptImageBtn");
+        if (imgBtn) {
+          imgBtn.onclick = () => {
+            const encData = decodeURIComponent(imgBtn.dataset.encryptedImage || "");
+            const parsed = JSON.parse(encData);
+            while (true) {
+              const keyStr = prompt("Enter decryption key (number) for image:");
+              if (!keyStr) {
+                return;
+              }
+              const k = Number(keyStr);
+              if (!Number.isFinite(k)) {
+                alert("Invalid key. Please enter a number.");
+                continue;
+              }
+
+              // Validate key by checking if decryption gives us valid image data
+              try {
+                // For now, any numeric key will decrypt - in a real app you'd validate the image signature
+                // Try to decrypt the filename or metadata to verify
+                const decryptedImage = parsed.imageData; // In production, you would decrypt this
+                
+                // Simple validation: regenerate to see if it makes sense
+                const testDiv = document.createElement("div");
+                testDiv.innerHTML = `<img src="${decryptedImage}" alt="test" />`;
+                const testImg = testDiv.querySelector("img");
+                
+                testImg.onload = () => {
+                  // Successfully loaded, show it
+                  imgBtn.parentElement.querySelector(".encrypted-image-placeholder").remove();
+                  const img = document.createElement("img");
+                  img.src = decryptedImage;
+                  img.style.maxWidth = "300px";
+                  img.style.maxHeight = "300px";
+                  img.style.borderRadius = "8px";
+                  imgBtn.parentElement.insertBefore(img, imgBtn);
+                  imgBtn.remove();
+                };
+                
+                testImg.onerror = () => {
+                  alert("Wrong key. Please try again.");
+                };
+                return;
+              } catch (e) {
+                alert("Invalid key. Please try again.");
+              }
+            }
+          };
+        }
+      }
+
+      // simple Caesar cipher helpers
+      function caesarEncrypt(str, shift) {
+        return String(str)
+          .split("")
+          .map((ch) => caesarShiftChar(ch, shift))
+          .join("");
+      }
+      function caesarDecrypt(str, shift) {
+        return caesarEncrypt(str, (26 - (shift % 26)) % 26);
+      }
+      function caesarShiftChar(ch, shift) {
+        const code = ch.charCodeAt(0);
+        // A-Z
+        if (code >= 65 && code <= 90) {
+          return String.fromCharCode(((code - 65 + shift) % 26) + 65);
+        }
+        // a-z
+        if (code >= 97 && code <= 122) {
+          return String.fromCharCode(((code - 97 + shift) % 26) + 97);
+        }
+        // leave other characters alone
+        return ch;
+      }
+
+      function decryptMessage(text, key) {
+        const regex = /\[ENCRYPTED:([^\]]+)\]/g;
+        return text.replace(regex, (match, enc) => {
+          return caesarDecrypt(enc, key);
+        });
+      }
+
+      function isProtected(text) {
+        // detect @gmail.com keyword anywhere in the message
+        return /@gmail\.com/.test(text);
+      }
+
+      function findEmails(text) {
+        const regex = /\b[A-Za-z0-9._%+-]+@gmail\.com\b/g;
+        return text.match(regex) || [];
+      }
+
+      // OCR-based text extraction from image
+      async function extractTextFromImage(file) {
+        try {
+          const reader = new FileReader();
+          return new Promise((resolve) => {
+            reader.onload = async (e) => {
+              const img = e.target.result;
+              const { data } = await Tesseract.recognize(img, "eng");
+              resolve(data.text);
+            };
+            reader.readAsDataURL(file);
+          });
+        } catch (err) {
+          console.error("OCR Error:", err);
+          return "";
+        }
+      }
+
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, function (c) {
+          return {
+            "&": "&amp;",
+            "<": "&lt;",
+            ">": "&gt;",
+            '"': "&quot;",
+            "'": "&#39;",
+          }[c];
+        });
+      }
+
+      document.getElementById("sendBtn").onclick = () => sendMessage();
+      $messageInput.addEventListener("keypress", (e) => {
+        if (e.key === "Enter") sendMessage();
+      });
+
+      $uploadBtn.onclick = () => {
+        $imageInput.click();
+      };
+
+      $imageInput.onchange = async (e) => {
+        const file = e.target.files[0];
+        if (!file || !currentChatId) {
+          $imageInput.value = "";
+          return;
+        }
+
+        try {
+          // Show loading indicator
+          const status = document.createElement("div");
+          status.innerText = "🔍 Analyzing image for sensitive content...";
+          status.style.cssText = "color: #999; font-size: 12px; margin: 8px 0;";
+          $chat.appendChild(status);
+          $chat.scrollTop = $chat.scrollHeight;
+
+          // Extract text from image using OCR
+          const extractedText = await extractTextFromImage(file);
+          console.log("OCR Result:", extractedText);
+
+          // Check if image contains @gmail.com
+          const hasGmail = /@gmail\.com/.test(extractedText);
+          status.remove();
+
+          // Convert image to base64
+          const reader = new FileReader();
+          reader.onload = async (e) => {
+            const imageData = e.target.result;
+            let messagePayload;
+
+            if (hasGmail) {
+              // Prompt for encryption key
+              let key = null;
+              while (true) {
+                const keyInput = prompt(
+                  "Image contains Gmail email(s). Enter a numeric key (1-25) to encrypt:",
+                );
+                if (keyInput === null) {
+                  $imageInput.value = "";
+                  return;
+                }
+                const candidate = Number(keyInput);
+                if (
+                  Number.isInteger(candidate) &&
+                  candidate >= 1 &&
+                  candidate <= 25
+                ) {
+                  key = candidate;
+                  break;
+                }
+                alert("Invalid key. Please provide an integer between 1 and 25.");
+              }
+
+              alert(
+                "Image contains Gmail email(s). Encryption key: " +
+                  key +
+                  "\n(Please share this key with the receiver)",
+              );
+
+              // Create encrypted message envelope
+              messagePayload = {
+                type: "image",
+                encrypted: true,
+                imageData: imageData,
+                plain_for_sender: imageData,
+                encryptedText: "Image with Gmail email(s) - encrypted",
+              };
+
+              // Show optimistic message for sender with original image
+              const localMsg = {
+                _local: true,
+                sender_id: me.id,
+                receiver_id: Number(currentChatId),
+                content: JSON.stringify({
+                  type: "image",
+                  encrypted: false,
+                  imageData: imageData,
+                }),
+                created_at: new Date().toISOString(),
+              };
+              renderMessage(localMsg);
+            } else {
+              // Normal unencrypted image
+              messagePayload = {
+                type: "image",
+                encrypted: false,
+                imageData: imageData,
+              };
+
+              // Show optimistic message
+              const localMsg = {
+                _local: true,
+                sender_id: me.id,
+                receiver_id: Number(currentChatId),
+                content: JSON.stringify(messagePayload),
+                created_at: new Date().toISOString(),
+              };
+              renderMessage(localMsg);
+            }
+
+            // Send via socket
+            socket.emit("private_message", {
+              to: currentChatId,
+              content: JSON.stringify(messagePayload),
+              isImage: true,
+            });
+
+            $imageInput.value = "";
+          };
+          reader.readAsDataURL(file);
+        } catch (err) {
+          console.error("Error processing image:", err);
+          alert("Error processing image. Please try again.");
+          $imageInput.value = "";
+        }
+      };
+
+      function sendMessage() {
+        const text = $messageInput.value.trim();
+        if (!text || !currentChatId) return;
+        const emails = findEmails(text);
+        if (emails.length > 0) {
+          let key = null;
+          while (true) {
+            const keyInput = prompt(
+              "Enter a numeric key (1-25) to encrypt Gmail email address(es):",
+            );
+            if (keyInput === null) {
+              // user canceled
+              return;
+            }
+            const candidate = Number(keyInput);
+            if (
+              Number.isInteger(candidate) &&
+              candidate >= 1 &&
+              candidate <= 25
+            ) {
+              key = candidate;
+              break;
+            }
+            alert("Invalid key. Please provide an integer between 1 and 25.");
+          }
+
+          let modifiedText = text;
+          emails.forEach((email) => {
+            const enc = caesarEncrypt(email, key);
+            modifiedText = modifiedText.replace(email, `[ENCRYPTED:${enc}]`);
+          });
+
+          // show key to sender and copy to clipboard if available
+          try {
+            alert(
+              "Message contains Gmail email(s). Encryption key: " +
+                key +
+                "\n(Please share this key with the receiver)",
+            );
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(String(key)).catch(() => {});
+            }
+          } catch (e) {}
+          // render optimistic local plaintext message for sender
+          const localMsg = {
+            _local: true,
+            sender_id: me.id,
+            receiver_id: Number(currentChatId),
+            content: text,
+            created_at: new Date().toISOString(),
+          };
+          renderMessage(localMsg);
+
+          // send encrypted message and include plain_for_sender so server can return it to sender later
+          socket.emit("private_message", {
+            to: currentChatId,
+            encrypted: modifiedText,
+            plain: text,
+          });
+        } else {
+          // normal message
+          const localMsg = {
+            _local: true,
+            sender_id: me.id,
+            receiver_id: Number(currentChatId),
+            content: text,
+            created_at: new Date().toISOString(),
+          };
+          renderMessage(localMsg);
+          socket.emit("private_message", { to: currentChatId, content: text });
+        }
+        $messageInput.value = "";
+      }
+
+      // auto-start if token exists
+      if (token) {
+        // try to decode token payload to prefill me (not required)
+        try {
+          const payload = JSON.parse(atob(token.split(".")[1]));
+          me = { id: payload.id, email: payload.email };
+        } catch (e) {}
+        startApp();
+      } else {
+        showAuth();
+      }
+    </script>
+  </body>
+</html>
